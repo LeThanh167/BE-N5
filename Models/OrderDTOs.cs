@@ -8,6 +8,8 @@ namespace PlantShopAPI.Models
 
     public class CreateOrderDto
     {
+        public string ShippingAddress { get; set; } = string.Empty;
+        public string PhoneNumber { get; set; } = string.Empty;
         public List<CreateOrderItemDto> Items { get; set; } = new();
         public decimal Discount { get; set; } = 0;
     }
