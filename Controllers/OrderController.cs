@@ -1,167 +1,118 @@
-using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using PlantShopAPI.Models;
-using System.Security.Claims;
 
 namespace PlantShopAPI.Controllers
 {
-    [Authorize]
-    [Route("api/orders")]
     [ApiController]
+    [Route("api/[controller]")]
     public class OrderController : ControllerBase
     {
-        // 1. NGHIỆP VỤ ĐẶT HÀNG (POST /api/orders)
-        [HttpPost]
-        public IActionResult CreateOrder([FromBody] CreateOrderDto request)
+        private readonly PlantStoreDbContext _context;
+
+        public OrderController(PlantStoreDbContext context)
         {
-            var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value 
-                         ?? User.FindFirst(ClaimTypes.Email)?.Value 
-                         ?? "UnknownUser";
-
-            if (request.Items == null || !request.Items.Any())
-                return BadRequest(new { message = "Giỏ hàng không được để trống!" });
-
-            decimal totalAmount = 0;
-            var orderItems = new List<OrderItem>();
-
-            foreach (var item in request.Items)
-            {
-                var plant = DataStore.Plants.FirstOrDefault(p => p.Id == item.PlantId);
-                if (plant == null)
-                    return NotFound(new { message = $"Không tìm thấy cây cảnh có ID: {item.PlantId}" });
-
-                if (plant.Quantity < item.Quantity)
-                    return BadRequest(new { message = $"Cây '{plant.Name}' chỉ còn {plant.Quantity} sản phẩm trong kho!" });
-
-                decimal itemTotal = plant.Price * item.Quantity;
-                totalAmount += itemTotal;
-
-                orderItems.Add(new OrderItem
-                {
-                    PlantId = plant.Id,
-                    Quantity = item.Quantity,
-                    Price = plant.Price // Lưu lại giá tại thời điểm mua
-                });
-
-                // Trừ tồn kho
-                plant.Quantity -= item.Quantity;
-            }
-
-            decimal finalAmount = totalAmount - request.Discount;
-            if (finalAmount < 0) finalAmount = 0;
-
-            var newOrder = new Order
-            {
-                Id = DataStore.Orders.Count + 1,
-                UserId = userId,
-                TotalAmount = totalAmount,
-                Discount = request.Discount,
-                FinalAmount = finalAmount,
-                Status = "PENDING",
-                CreatedAt = DateTime.Now,
-                OrderItems = orderItems
-            };
-
-            DataStore.Orders.Add(newOrder);
-
-            return Ok(new { message = "Đặt hàng thành công!", order = newOrder });
+            _context = context;
         }
 
-        // 2. XEM DANH SÁCH ĐƠN HÀNG (GET /api/orders)
+        // GET: api/Order
         [HttpGet]
-        public IActionResult GetOrders()
+        public async Task<IActionResult> GetAll()
         {
-            var role = User.FindFirst(ClaimTypes.Role)?.Value;
-            var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value 
-                         ?? User.FindFirst(ClaimTypes.Email)?.Value;
+            var orders = await _context.Orders
+                .Include(o => o.OrderItems)
+                .ThenInclude(oi => oi.Product)
+                .ToListAsync();
 
-            if (role == "ADMIN")
-            {
-                return Ok(DataStore.Orders);
-            }
-
-            var userOrders = DataStore.Orders.Where(o => o.UserId == userId).ToList();
-            return Ok(userOrders);
+            return Ok(orders);
         }
 
-        // 3. XEM CHI TIẾT 1 ĐƠN HÀNG (GET /api/orders/{id}) - BỔ SUNG CHUẨN KẾ HOẠCH
+        // GET: api/Order/5
         [HttpGet("{id}")]
-        public IActionResult GetOrderById(int id)
+        public async Task<IActionResult> GetById(int id)
         {
-            var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value 
-                         ?? User.FindFirst(ClaimTypes.Email)?.Value;
-            var role = User.FindFirst(ClaimTypes.Role)?.Value;
+            var order = await _context.Orders
+                .Include(o => o.OrderItems)
+                .ThenInclude(oi => oi.Product)
+                .FirstOrDefaultAsync(o => o.OrderId == id);
 
-            var order = DataStore.Orders.FirstOrDefault(o => o.Id == id);
-            if (order == null)
-                return NotFound(new { message = "Không tìm thấy đơn hàng!" });
-
-            if (role != "ADMIN" && order.UserId != userId)
-                return Forbid();
+            if (order == null) return NotFound("Không tìm thấy đơn hàng.");
 
             return Ok(order);
         }
 
-        // 4. NGHIỆP VỤ HỦY ĐƠN HÀNG (PUT /api/orders/{id}/cancel)
-        [HttpPut("{id}/cancel")]
-        public IActionResult CancelOrder(int id)
+        // POST: api/Order
+        [HttpPost]
+        public async Task<IActionResult> Create([FromBody] CreateOrderDto dto, [FromQuery] int userId = 1)
         {
-            var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value 
-                         ?? User.FindFirst(ClaimTypes.Email)?.Value;
-            var role = User.FindFirst(ClaimTypes.Role)?.Value;
+            if (dto.Items == null || !dto.Items.Any())
+                return BadRequest("Đơn hàng phải có ít nhất 1 sản phẩm.");
 
-            var order = DataStore.Orders.FirstOrDefault(o => o.Id == id);
-            if (order == null)
-                return NotFound(new { message = "Không tìm thấy đơn hàng!" });
+            decimal totalAmount = 0;
+            var orderItems = new List<OrderItem>();
 
-            if (role != "ADMIN" && order.UserId != userId)
-                return Forbid();
-
-            if (order.Status == "CANCELLED")
-                return BadRequest(new { message = "Đơn hàng này đã bị hủy trước đó!" });
-
-            // Kiểm tra trạng thái đơn: Chỉ cho phép hủy khi PENDING hoặc CONFIRMED
-            if (order.Status != "PENDING" && order.Status != "CONFIRMED")
+            foreach (var item in dto.Items)
             {
-                return BadRequest(new { 
-                    message = "Không thể hủy đơn hàng khi đã chuyển sang trạng thái đang giao (SHIPPING) hoặc đã hoàn thành (COMPLETED)!" 
+                var plant = await _context.Plants.FindAsync(item.PlantId);
+                if (plant == null)
+                    return BadRequest($"Không tìm thấy cây trồng với ID = {item.PlantId}");
+
+                var unitPrice = plant.Price;
+                totalAmount += unitPrice * item.Quantity;
+
+                orderItems.Add(new OrderItem
+                {
+                    ProductId = item.PlantId,
+                    Quantity = item.Quantity,
+                    UnitPrice = unitPrice
                 });
             }
 
-            order.Status = "CANCELLED";
+            totalAmount = Math.Max(0, totalAmount - dto.Discount);
 
-            // Hoàn lại tồn kho
-            foreach (var item in order.OrderItems)
+            var order = new Order
             {
-                var plant = DataStore.Plants.FirstOrDefault(p => p.Id == item.PlantId);
-                if (plant != null)
-                {
-                    plant.Quantity += item.Quantity;
-                }
-            }
+                UserId = userId,
+                TotalAmount = totalAmount,
+                Status = "Đang xử lý",
+                OrderDate = DateTime.Now,
+                OrderItems = orderItems
+            };
 
-            return Ok(new { message = "Hủy đơn hàng thành công, đã hoàn lại tồn kho!", order });
+            _context.Orders.Add(order);
+            await _context.SaveChangesAsync();
+
+            return CreatedAtAction(nameof(GetById), new { id = order.OrderId }, order);
         }
 
-        // 5. CẬP NHẬT TRẠNG THÁI ĐƠN HÀNG (PUT /api/orders/{id}/status) - BỔ SUNG CHUẨN KẾ HOẠCH
-        [Authorize(Roles = "ADMIN")]
+        // PUT: api/Order/5/status
         [HttpPut("{id}/status")]
-        public IActionResult UpdateStatus(int id, [FromBody] UpdateStatusDto request)
+        public async Task<IActionResult> UpdateStatus(int id, [FromBody] UpdateStatusDto dto)
         {
-            var order = DataStore.Orders.FirstOrDefault(o => o.Id == id);
-            if (order == null)
-                return NotFound(new { message = "Không tìm thấy đơn hàng!" });
+            var order = await _context.Orders.FindAsync(id);
+            if (order == null) return NotFound("Không tìm thấy đơn hàng.");
 
-            string newStatus = request.Status.ToUpper();
-            var validStatuses = new[] { "PENDING", "CONFIRMED", "SHIPPING", "COMPLETED", "CANCELLED" };
+            order.Status = dto.Status;
+            await _context.SaveChangesAsync();
 
-            if (!validStatuses.Contains(newStatus))
-            {
-                return BadRequest(new { message = "Trạng thái không hợp lệ! Các trạng thái hợp lệ: PENDING, CONFIRMED, SHIPPING, COMPLETED, CANCELLED" });
-            }
+            return Ok(order);
+        }
 
-            order.Status = newStatus;
-            return Ok(new { message = "Cập nhật trạng thái đơn hàng thành công!", order });
+        // DELETE: api/Order/5
+        [HttpDelete("{id}")]
+        public async Task<IActionResult> Delete(int id)
+        {
+            var order = await _context.Orders
+                .Include(o => o.OrderItems)
+                .FirstOrDefaultAsync(o => o.OrderId == id);
+
+            if (order == null) return NotFound("Không tìm thấy đơn hàng.");
+
+            _context.OrderItems.RemoveRange(order.OrderItems);
+            _context.Orders.Remove(order);
+            await _context.SaveChangesAsync();
+
+            return Ok(new { message = "Xóa đơn hàng thành công." });
         }
     }
 }

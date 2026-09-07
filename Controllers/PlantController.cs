@@ -1,75 +1,82 @@
-using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using PlantShopAPI.Models;
 
 namespace PlantShopAPI.Controllers
 {
-    [Route("api/plants")]
     [ApiController]
+    [Route("api/[controller]")]
     public class PlantController : ControllerBase
     {
-        // 1. Lấy danh sách cây
-        [HttpGet]
-        public IActionResult GetAll([FromQuery] string? search, [FromQuery] int page = 1, [FromQuery] int pageSize = 10)
+        private readonly PlantStoreDbContext _context;
+
+        public PlantController(PlantStoreDbContext context)
         {
-            var query = DataStore.Plants.AsQueryable();
+            _context = context;
+        }
+
+        // GET: api/Plant
+        [HttpGet]
+        public async Task<IActionResult> GetAll([FromQuery] string? search)
+        {
+            var query = _context.Plants.Include(p => p.Category).AsQueryable();
 
             if (!string.IsNullOrEmpty(search))
             {
-                query = query.Where(p => p.Name.Contains(search, StringComparison.OrdinalIgnoreCase));
+                query = query.Where(p => p.PlantName.Contains(search));
             }
 
-            var totalItems = query.Count();
-            var result = query.Skip((page - 1) * pageSize).Take(pageSize).ToList();
-
-            return Ok(new { totalItems, page, pageSize, data = result });
+            var plants = await query.ToListAsync();
+            return Ok(plants);
         }
 
-        // 2. Xem chi tiết
+        // GET: api/Plant/5
         [HttpGet("{id}")]
-        public IActionResult GetById(int id)
+        public async Task<IActionResult> GetById(int id)
         {
-            var plant = DataStore.Plants.FirstOrDefault(p => p.Id == id);
-            if (plant == null) return NotFound(new { message = "Không tìm thấy cây cảnh!" });
+            var plant = await _context.Plants.Include(p => p.Category)
+                .FirstOrDefaultAsync(p => p.PlantId == id);
+
+            if (plant == null) return NotFound("Không tìm thấy cây trồng.");
+
             return Ok(plant);
         }
 
-        // 3. Thêm cây mới
-        [Authorize(Roles = "ADMIN")]
+        // POST: api/Plant
         [HttpPost]
-        public IActionResult Create([FromBody] Plant newPlant)
+        public async Task<IActionResult> Create([FromBody] Plant plant)
         {
-            newPlant.Id = DataStore.Plants.Max(p => p.Id) + 1;
-            DataStore.Plants.Add(newPlant);
-            return CreatedAtAction(nameof(GetById), new { id = newPlant.Id }, newPlant);
+            _context.Plants.Add(plant);
+            await _context.SaveChangesAsync();
+            return CreatedAtAction(nameof(GetById), new { id = plant.PlantId }, plant);
         }
 
-        // 4. Cập nhật cây
-        [Authorize(Roles = "ADMIN")]
+        // PUT: api/Plant/5
         [HttpPut("{id}")]
-        public IActionResult Update(int id, [FromBody] Plant updatedPlant)
+        public async Task<IActionResult> Update(int id, [FromBody] Plant updatedPlant)
         {
-            var plant = DataStore.Plants.FirstOrDefault(p => p.Id == id);
-            if (plant == null) return NotFound(new { message = "Không tìm thấy cây cảnh!" });
+            var plant = await _context.Plants.FindAsync(id);
+            if (plant == null) return NotFound("Không tìm thấy cây trồng.");
 
-            plant.Name = updatedPlant.Name;
+            plant.PlantName = updatedPlant.PlantName;
             plant.Price = updatedPlant.Price;
-            plant.Quantity = updatedPlant.Quantity;
-            plant.Description = updatedPlant.Description;
+            plant.ImageUrl = updatedPlant.ImageUrl;
+            plant.CategoryId = updatedPlant.CategoryId;
 
-            return Ok(new { message = "Cập nhật thành công!", plant });
+            await _context.SaveChangesAsync();
+            return Ok(plant);
         }
 
-        // 5. Xóa cây
-        [Authorize(Roles = "ADMIN")]
+        // DELETE: api/Plant/5
         [HttpDelete("{id}")]
-        public IActionResult Delete(int id)
+        public async Task<IActionResult> Delete(int id)
         {
-            var plant = DataStore.Plants.FirstOrDefault(p => p.Id == id);
-            if (plant == null) return NotFound(new { message = "Không tìm thấy cây cảnh!" });
+            var plant = await _context.Plants.FindAsync(id);
+            if (plant == null) return NotFound("Không tìm thấy cây trồng.");
 
-            DataStore.Plants.Remove(plant);
-            return Ok(new { message = "Xóa cây thành công!" });
+            _context.Plants.Remove(plant);
+            await _context.SaveChangesAsync();
+            return Ok(new { message = "Xóa cây trồng thành công." });
         }
     }
 }

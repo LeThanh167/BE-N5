@@ -1,31 +1,29 @@
+using System.Text;
+using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
-using PlantShopAPI.Data;
 using PlantShopAPI.Models;
-using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// 1. Kết nối Database (MySQL)
-var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
-builder.Services.AddDbContext<ApplicationDbContext>(options =>
-    options.UseMySql(connectionString, ServerVersion.AutoDetect(connectionString)));
+// 1. Cấu hình DbContext
+builder.Services.AddDbContext<PlantStoreDbContext>(options =>
+    options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
 
-// 2. Cấu hình Identity
-builder.Services.AddIdentity<ApplicationUser, IdentityRole>(options =>
+// 2. Cấu hình CORS (Cho phép Frontend gọi API)
+builder.Services.AddCors(options =>
 {
-    options.Password.RequireDigit = true;
-    options.Password.RequireLowercase = true;
-    options.Password.RequireUppercase = false;
-    options.Password.RequireNonAlphanumeric = false;
-    options.Password.RequiredLength = 6;
-})
-.AddEntityFrameworkStores<ApplicationDbContext>()
-.AddDefaultTokenProviders();
+    options.AddPolicy("AllowFrontend", policy =>
+    {
+        policy.WithOrigins("http://localhost:5173", "http://localhost:3000", "http://localhost:8080")
+              .AllowAnyHeader()
+              .AllowAnyMethod();
+    });
+});
 
-// 3. Cấu hình JWT
+// 3. Cấu hình JWT Authentication
 var jwtKey = builder.Configuration["Jwt:Key"];
 var jwtIssuer = builder.Configuration["Jwt:Issuer"];
 var jwtAudience = builder.Configuration["Jwt:Audience"];
@@ -49,23 +47,35 @@ builder.Services.AddAuthentication(options =>
     };
 });
 
-builder.Services.AddAuthorization();
+// 4. Controllers & JSON Reference Handling
+builder.Services.AddControllers()
+    .AddJsonOptions(options =>
+    {
+        options.JsonSerializerOptions.ReferenceHandler = ReferenceHandler.IgnoreCycles;
+    });
 
-// 4. Controllers + OpenAPI
-builder.Services.AddControllers();
-builder.Services.AddOpenApi();
+// 5. Swagger / OpenAPI
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen();
 
 var app = builder.Build();
 
+// Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
 {
-    app.MapOpenApi();
+    app.UseSwagger();
+    app.UseSwaggerUI(c =>
+    {
+        c.SwaggerEndpoint("/swagger/v1/swagger.json", "PlantShopAPI v1");
+        c.RoutePrefix = "swagger";
+    });
 }
 
-app.UseHttpsRedirection();
+// BẮT BUỘC đặt UseCors TRƯỚC UseAuthentication và UseAuthorization
+app.UseCors("AllowFrontend");
 
-app.UseAuthentication(); // Quan trọng: phải có
-app.UseAuthorization();
+app.UseAuthentication(); // Bật Xác thực JWT
+app.UseAuthorization();  // Bật Phân quyền
 
 app.MapControllers();
 

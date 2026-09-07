@@ -8,7 +8,6 @@ namespace PlantShopAPI.Controllers
     [ApiController]
     public class TestController : ControllerBase
     {
-        // API này ai cũng gọi được (không cần token)
         [HttpGet("public")]
         public IActionResult Public()
         {

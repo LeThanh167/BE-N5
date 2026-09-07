@@ -1,5 +1,5 @@
-using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using PlantShopAPI.Models;
 using System.IdentityModel.Tokens.Jwt;
@@ -12,17 +12,12 @@ namespace PlantShopAPI.Controllers
     [ApiController]
     public class AuthController : ControllerBase
     {
-        private readonly UserManager<ApplicationUser> _userManager;
-        private readonly SignInManager<ApplicationUser> _signInManager;
+        private readonly PlantStoreDbContext _context;
         private readonly IConfiguration _configuration;
 
-        public AuthController(
-            UserManager<ApplicationUser> userManager,
-            SignInManager<ApplicationUser> signInManager,
-            IConfiguration configuration)
+        public AuthController(PlantStoreDbContext context, IConfiguration configuration)
         {
-            _userManager = userManager;
-            _signInManager = signInManager;
+            _context = context;
             _configuration = configuration;
         }
 
@@ -33,47 +28,44 @@ namespace PlantShopAPI.Controllers
             if (!ModelState.IsValid)
                 return BadRequest(ModelState);
 
-            var userExists = await _userManager.FindByEmailAsync(model.Email);
-            if (userExists != null)
+            var userExists = await _context.Users.AnyAsync(u => u.Email == model.Email);
+            if (userExists)
                 return BadRequest(new { message = "Email đã tồn tại" });
 
-            // SỬA ĐỔI: Chấp nhận Role từ request (nếu có), nếu không mặc định là "USER"
             string assignedRole = string.IsNullOrWhiteSpace(model.Role) ? "USER" : model.Role.ToUpper();
 
-            var user = new ApplicationUser
+            var user = new User
             {
-                UserName = model.Email,
                 Email = model.Email,
+                PasswordHash = model.Password,
                 FullName = model.FullName,
-                Role = assignedRole // Gán role động
+                Role = assignedRole,
+                CreatedAt = DateTime.Now
             };
 
-            var result = await _userManager.CreateAsync(user, model.Password);
+            _context.Users.Add(user);
+            await _context.SaveChangesAsync();
 
-            if (!result.Succeeded)
-                return BadRequest(result.Errors);
-
-            return Ok(new { message = "Đăng ký thành công" });
+            return Ok(new { message = "Đăng ký thành công", userId = user.UserId });
         }
 
         // ===================== LOGIN =====================
         [HttpPost("login")]
         public async Task<IActionResult> Login([FromBody] LoginDto model)
         {
-            var user = await _userManager.FindByEmailAsync(model.Email);
+            var user = await _context.Users
+                .FirstOrDefaultAsync(u => u.Email == model.Email && u.PasswordHash == model.Password);
+
             if (user == null)
                 return Unauthorized(new { message = "Email hoặc mật khẩu không đúng" });
 
-            var result = await _signInManager.CheckPasswordSignInAsync(user, model.Password, false);
-            if (!result.Succeeded)
-                return Unauthorized(new { message = "Email hoặc mật khẩu không đúng" });
-
-            // Tạo JWT
+            // Tạo JWT Token
             var token = GenerateJwtToken(user);
 
             return Ok(new
             {
                 token = token,
+                userId = user.UserId,
                 email = user.Email,
                 fullName = user.FullName,
                 role = user.Role
@@ -81,11 +73,11 @@ namespace PlantShopAPI.Controllers
         }
 
         // ===================== TẠO JWT =====================
-        private string GenerateJwtToken(ApplicationUser user)
+        private string GenerateJwtToken(User user)
         {
             var claims = new[]
             {
-                new Claim(ClaimTypes.NameIdentifier, user.Id),
+                new Claim(ClaimTypes.NameIdentifier, user.UserId.ToString()),
                 new Claim(ClaimTypes.Email, user.Email ?? ""),
                 new Claim(ClaimTypes.Name, user.FullName ?? ""),
                 new Claim(ClaimTypes.Role, user.Role ?? "USER")
@@ -106,13 +98,12 @@ namespace PlantShopAPI.Controllers
         }
     }
 
-    // ===================== DTOs =====================
     public class RegisterDto
     {
         public string FullName { get; set; } = string.Empty;
         public string Email { get; set; } = string.Empty;
         public string Password { get; set; } = string.Empty;
-        public string? Role { get; set; } 
+        public string? Role { get; set; }
     }
 
     public class LoginDto
